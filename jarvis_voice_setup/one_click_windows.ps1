@@ -35,57 +35,105 @@ try {
     $env:OPENJARVIS_REPO_URL = $repo
     $env:OPENJARVIS_HOME = $root
     $env:OPENJARVIS_SKIP_SERVICE = '1'
-    # Maturin can bootstrap a temporary Rust copy via puccinialin, but on
-    # Windows that copy sometimes fails even on "cargo --version" (exit 1).
-    # Prefer a verified user Rustup toolchain instead. OpenJarvis pins 1.89
-    # in rust/rust-toolchain.toml. Do not alter a working Rust installation.
-    Write-Host '[0/5] Checking Rust and Cargo for native OpenJarvis...' -ForegroundColor Cyan
-    $rustBin = Join-Path $env:USERPROFILE '.cargo\bin'
-    if (Test-Path $rustBin) { $env:Path = "$rustBin;$env:Path" }
-
-    function Test-RustCompiler {
-        $cargoExe = (Get-Command cargo.exe -ErrorAction SilentlyContinue).Source
-        $rustcExe = (Get-Command rustc.exe -ErrorAction SilentlyContinue).Source
-        if (-not $cargoExe -or -not $rustcExe) { return $false }
-        try {
-            & $cargoExe --version | Out-Null
-            if ($LASTEXITCODE -ne 0) { return $false }
-            & $rustcExe --version | Out-Null
-            return ($LASTEXITCODE -eq 0)
-        } catch {
-            return $false
+    # OpenJarvis pins Rust 1.89 in rust/rust-toolchain.toml.
+    # A working generic cargo.exe is NOT enough if this exact toolchain is missing.
+    # Rustup sometimes leaves an unreadable partial component in its download cache.
+    Write-Host '[0/5] Checking pinned Rust 1.89 and Cargo...' -ForegroundColor Cyan
+    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+    if (Test-Path -LiteralPath $cargoBin) { $env:Path = "$cargoBin;$env:Path" }
+    $rustupExe = (Get-Command rustup.exe -ErrorAction SilentlyContinue).Source
+    if (-not $rustupExe) {
+        $wingetExe = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+        if (-not $wingetExe) {
+            throw 'Rustup and winget are unavailable. Install the official Rustup from https://rustup.rs then retry.'
         }
-    }
-
-    if (-not (Test-RustCompiler)) {
-        Write-Host 'Rust is missing or broken; installing the FREE official Rustup toolchain...' -ForegroundColor Yellow
+        Write-Host 'Installing free official Rustup. Windows may request approval.' -ForegroundColor Yellow
+        & $wingetExe install --exact --id Rustlang.Rustup --accept-source-agreements --accept-package-agreements
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Rustup could not be installed through winget. Use https://rustup.rs then retry.'
+        }
+        $env:Path = "$cargoBin;$env:Path"
         $rustupExe = (Get-Command rustup.exe -ErrorAction SilentlyContinue).Source
         if (-not $rustupExe) {
-            $wingetExe = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
-            if (-not $wingetExe) {
-                throw 'Rustup is missing and Windows Package Manager (winget) is not available. Install Rustup from https://rustup.rs then retry.'
-            }
-            Write-Host 'Windows may ask you to approve the official Rustup installer.' -ForegroundColor Yellow
-            & $wingetExe install --exact --id Rustlang.Rustup --accept-source-agreements --accept-package-agreements
-            if ($LASTEXITCODE -ne 0) {
-                throw 'Rustup installation did not finish. Install Rustup from https://rustup.rs and rerun.'
-            }
-            $env:Path = "$rustBin;$env:Path"
-            $rustupExe = (Get-Command rustup.exe -ErrorAction SilentlyContinue).Source
+            throw 'Rustup was installed, but Windows has not loaded it into PATH. Open a fresh PowerShell and run the installer again.'
         }
-        if (-not $rustupExe) {
-            throw 'Rustup installed but its executable is not available. Reopen PowerShell or restart Windows and rerun the launcher.'
+    }
+
+    $rustupRoot = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $env:USERPROFILE '.rustup' }
+    $rustDownloads = [System.IO.Path]::GetFullPath((Join-Path $rustupRoot 'downloads')).TrimEnd('\')
+    $rustupStdout = Join-Path $env:TEMP 'Jarvis_Rustup.stdout.log'
+    $rustupStderr = Join-Path $env:TEMP 'Jarvis_Rustup.stderr.log'
+    $rustInstalled = $false
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Write-Host "Installing/checking required Rust 1.89.0 (attempt $attempt of 3)..." -ForegroundColor Cyan
+        # Separate stdout/stderr capture avoids Windows PowerShell 5.1 turning
+        # ordinary native stderr into a terminating error before retries run.
+        try {
+            $rustProc = Start-Process -FilePath $rustupExe -ArgumentList @(
+                'toolchain','install','1.89.0','--profile','minimal',
+                '--component','rustfmt','--component','clippy'
+            ) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $rustupStdout -RedirectStandardError $rustupStderr
+            $resultCode = $rustProc.ExitCode
+        } catch {
+            throw "Rustup could not run on this PC: $($_.Exception.Message). Check Windows Security Protection History for blocked executables."
         }
-        & $rustupExe toolchain install '1.89.0' --profile minimal
-        if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain 1.89.0 could not be installed.' }
-        & $rustupExe default '1.89.0'
-        if ($LASTEXITCODE -ne 0) { throw 'Rustup could not select Rust 1.89.0.' }
-        $env:Path = "$rustBin;$env:Path"
+
+        $rustLog = ''
+        if (Test-Path -LiteralPath $rustupStdout) {
+            $rustLog += [System.IO.File]::ReadAllText($rustupStdout)
+        }
+        if (Test-Path -LiteralPath $rustupStderr) {
+            $rustLog += [Environment]::NewLine + [System.IO.File]::ReadAllText($rustupStderr)
+        }
+        if ($rustLog.Trim()) { Write-Host $rustLog }
+
+        if ($resultCode -eq 0) {
+            $rustInstalled = $true
+            break
+        }
+
+        if ($attempt -eq 1) {
+            # Only remove the specific corrupt Rustup cache blob named in its
+            # own error. Never clear the entire cache or any other user files.
+            $badFileMatch = [regex]::Match(
+                $rustLog,
+                "(?i)could not read downloaded file:\s*'(?<file>[^']+)'"
+            )
+            if ($badFileMatch.Success) {
+                $badFile = $badFileMatch.Groups['file'].Value
+                try {
+                    $badFile = [System.IO.Path]::GetFullPath($badFile)
+                    $badParent = [System.IO.Path]::GetDirectoryName($badFile).TrimEnd('\')
+                    $badName = [System.IO.Path]::GetFileName($badFile)
+                    if (
+                        [string]::Equals($badParent, $rustDownloads, [System.StringComparison]::OrdinalIgnoreCase) -and
+                        $badName -match '^[0-9a-fA-F]{64}$' -and
+                        (Test-Path -LiteralPath $badFile -PathType Leaf)
+                    ) {
+                        Write-Host 'Removing only the damaged Rust download cache file before retry.' -ForegroundColor Yellow
+                        Remove-Item -LiteralPath $badFile -Force -ErrorAction Stop
+                    }
+                } catch {
+                    Write-Warning "Could not clear the specific failed Rust cache file: $($_.Exception.Message)"
+                }
+            }
+        }
+        if ($attempt -lt 3) {
+            Write-Host 'Rust download was interrupted; retrying from the official Rust servers...' -ForegroundColor Yellow
+            Start-Sleep -Seconds 3
+        }
     }
-    if (-not (Test-RustCompiler)) {
-        throw 'Rust/Cargo is still unavailable. Open a new PowerShell, check cargo --version and rustc --version, then retry.'
+    if (-not $rustInstalled) {
+        throw "Rust 1.89.0 could not install after 3 attempts. Details in $rustupStderr. Check free disk space and Windows Security Protection History; do not disable antivirus."
     }
-    Write-Host 'Rust and Cargo are ready.' -ForegroundColor Green
+
+    # Verify the exact compiler that the OpenJarvis Rust workspace will use.
+    & $rustupExe run '1.89.0' rustc --version
+    if ($LASTEXITCODE -ne 0) { throw 'Rust 1.89 compiler failed its version check.' }
+    & $rustupExe run '1.89.0' cargo --version
+    if ($LASTEXITCODE -ne 0) { throw 'Cargo for Rust 1.89 failed its version check.' }
+    Write-Host 'Rust 1.89 and Cargo verified; continuing OpenJarvis installation.' -ForegroundColor Green
 
     Write-Host '[1/5] Installing OpenJarvis and the local AI model...' -ForegroundColor Cyan
     & $upstream -SkipService
