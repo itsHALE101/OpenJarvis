@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $repo = 'https://github.com/itsHALE101/OpenJarvis.git'
 $root = Join-Path $env:LOCALAPPDATA 'OpenJarvis-Offline'
 $src = Join-Path $root 'src'
-$home = Join-Path $env:USERPROFILE '.openjarvis'
+$jarvisVoiceHome = Join-Path $env:USERPROFILE '.openjarvis'
 $folder = Split-Path -Parent $MyInvocation.MyCommand.Path
 $parent = (Resolve-Path (Join-Path $folder '..')).Path
 $upstream = Join-Path $parent 'deploy\windows\install.ps1'
@@ -68,7 +68,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Jarvis configuration failed.' }
 
     Write-Host '[5/5] Starting the local offline voice...' -ForegroundColor Cyan
-    $voicePython = Join-Path $home 'offline-voice-venv\Scripts\python.exe'
+    $voicePython = Join-Path $jarvisVoiceHome 'offline-voice-venv\Scripts\python.exe'
     $voiceServer = Join-Path $voiceDir 'voice_server.py'
     if (-not (Test-Path $voicePython)) { throw 'Offline voice Python missing.' }
     $ready = $false
