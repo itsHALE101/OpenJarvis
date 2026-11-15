@@ -8,7 +8,7 @@ rem The official setup then installs a separate local OpenJarvis installation.
 set "BOOTROOT=%LOCALAPPDATA%\OpenJarvis-Offline\bootstrap"
 set "BOOTPS=%BOOTROOT%\jarvis_voice_setup\one_click_windows.ps1"
 set "BOOTINSTALL=%BOOTROOT%\deploy\windows\install.ps1"
-set "REVISION=3adef1f260491af416f90e8f2f582ac9d4bdca75"
+set "REVISION=4d50879ad774665e1fd62d3e91da36743b0f3530"
 
 echo.
 echo ============================================================
