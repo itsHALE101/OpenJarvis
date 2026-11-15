@@ -7,6 +7,7 @@ echo.
 echo JARVIS - Installing free local British voice
 echo All speech generation stays on your computer.
 echo.
+if exist "%USERPROFILE%\.local\bin\uv.exe" set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 where uv >nul 2>&1
 if errorlevel 1 (
   echo uv is missing. Please run 00_INSTALL_AND_START_JARVIS.bat first.

@@ -5,7 +5,9 @@ so the user's older Jarvis application is never silently reconfigured.
 """
 from __future__ import annotations
 
+import json
 import os
+from urllib.request import urlopen
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -48,13 +50,32 @@ doc["engine"]["default"] = "ollama"
 
 if "agent" not in doc:
     doc["agent"] = tomlkit.table()
-prior = str(doc["agent"].get("system_prompt", "")).strip()
+with urlopen("http://127.0.0.1:11434/api/tags", timeout=5) as response:
+    models = [entry["name"] for entry in json.load(response)["models"]]
+intel = doc.setdefault("intelligence", tomlkit.table())
+current = intel.get("model_chat") or intel.get("default_model")
+chosen = current if current in models and current.lower().startswith("qwen") else next(
+    (m for m in models if m.lower().startswith("qwen")), None)
+if not chosen:
+    raise SystemExit("No installed Qwen model found in local Ollama.")
+intel["default_model"] = intel["model_chat"] = chosen
+doc["speech"]["language"] = "en"
+prior = str(doc["agent"].get("default_system_prompt", "")).strip()
 if not prior.startswith(persona):
-    doc["agent"]["system_prompt"] = persona + (
+    doc["agent"]["default_system_prompt"] = persona + (
         "\n\nAdditional existing instructions:\n" + prior if prior else ""
     )
 
-config.write_text(tomlkit.dumps(doc), encoding="utf-8")
+import tempfile
+
+with tempfile.NamedTemporaryFile("w", dir=config.parent, encoding="utf-8", delete=False) as new:
+    draft = Path(new.name)
+    try:
+        new.write(tomlkit.dumps(doc))
+        new.close()
+        os.replace(draft, config)
+    finally:
+        draft.unlink(missing_ok=True)
 print("Local Jarvis config:", config)
 print("AI: Ollama | Speech recognition: local Whisper")
 print("Voice: Jarvis-local (Piper; optional local Chatterbox)")

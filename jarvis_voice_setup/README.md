@@ -100,3 +100,23 @@ dependency.
 - No ElevenLabs API key is needed for this speech backend.
 - The ElevenLabs hosted conversational agent still relies on its service.
 - Windows execution and voice similarity must be verified on your PC.
+## Windows offline voice launcher
+
+Use **OPEN_OFFLINE_JARVIS_AGAIN.bat** in the offline checkout for day-to-day
+use. At the voice prompt, press Enter, speak, and pause. Type `/quit` to exit.
+The launcher reuses local Ollama, the installed Qwen tag, cached Whisper base,
+and en_GB-alan-medium. It opens the microphone on request. After the initial
+model downloads the voice chat runs offline.
+
+The separate Windows launcher uses port **4711** for Piper. Standalone legacy
+voice scripts still default to 4701. To override, set OPENJARVIS_VOICE_PORT
+consistently for both processes. Check /health on the selected loopback port.
+If recognition misses quiet speech, check the Windows default microphone.
+The launcher uses OPENJARVIS_MIC_RMS=140 unless overridden; lower values
+detect quieter speech and can also pick up more background noise.
+
+Ollama discovery uses the local tags endpoint, the executable on PATH, the
+standard user install directory and registry PATH entries. An existing
+Qwen tag is reused. A fresh Ollama install uses Inno Setup's unattended
+switches and reports its log and process ID if waiting exceeds five minutes.
+Inspect that log before retrying. Reopening voice chat never runs the installer.

@@ -395,87 +395,82 @@ Write-Ok "Dependencies installed"
 # 7. Ollama - install + start + wait for daemon
 # ---------------------------------------------------------------------------
 
-Write-Info "Checking Ollama..."
-$ollamaExe = (Get-Command ollama -ErrorAction SilentlyContinue).Source
-if (-not $ollamaExe) {
-    Write-Info "  Ollama not on PATH - downloading the official installer (~150 MB)..."
-    $ollamaSetup = Join-Path $env:TEMP 'OllamaSetup.exe'
-    # SilentlyContinue is load-bearing in PS 5.1: the default progress
-    # bar renderer slows Invoke-WebRequest down 30x on large downloads
-    # (a known PS5.1 issue), turning a 30s download into 15+ minutes.
-    $prevProgress = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
+function Find-OllamaExecutable {
+    $cmd = Get-Command ollama.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    $dirs = @("$env:LOCALAPPDATA\Programs\Ollama", "$env:ProgramFiles\Ollama")
+    foreach ($scope in 'User','Machine') {
+        $dirs += ([Environment]::ExpandEnvironmentVariables([string][Environment]::GetEnvironmentVariable('Path',$scope)) -split ';')
+    }
+    foreach ($dir in $dirs) {
+        if (-not $dir) { continue }
+        $exe = Join-Path ($dir.Trim('"')) 'ollama.exe'
+        if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+    }
+}
+
+function Get-LocalOllamaTags {
     try {
-        Invoke-WebRequest `
-            -Uri 'https://ollama.com/download/OllamaSetup.exe' `
-            -OutFile $ollamaSetup `
-            -UseBasicParsing
-    } catch {
-        Remove-Item $ollamaSetup -ErrorAction SilentlyContinue  # clean up partial download
-        $ProgressPreference = $prevProgress
-        Write-Fail "Ollama download failed: $($_.Exception.Message)`nInstall manually from https://ollama.com, then re-run."
-    } finally {
-        $ProgressPreference = $prevProgress
-    }
-    # OllamaSetup.exe is built with NSIS, whose silent-install flag is
-    # /S (uppercase). The Inno-Setup-style /silent would open the GUI
-    # and hang `Start-Process -Wait` indefinitely.
-    Write-Info "  Running OllamaSetup.exe /S (this can take a minute)..."
-    Start-Process -FilePath $ollamaSetup -ArgumentList '/S' -Wait
-    Remove-Item $ollamaSetup -ErrorAction SilentlyContinue
-    Update-PathFromRegistry
-    $ollamaExe = (Get-Command ollama -ErrorAction SilentlyContinue).Source
-    if (-not $ollamaExe) {
-        Write-Fail "Ollama installer ran but 'ollama' isn't on PATH. Open a fresh PowerShell and re-run, or install manually from https://ollama.com."
-    }
-}
-Write-Ok "Ollama ($ollamaExe)"
-
-# Make sure the daemon is actually responsive before pulling. The Ollama
-# Windows installer launches the tray app at install time, but on a re-
-# run with an existing install the daemon may not be running yet.
-Write-Info "Waiting for Ollama daemon..."
-$ollamaReady = $false
-for ($i = 0; $i -lt 60; $i++) {
-    # 'ollama list' writes to stderr until the daemon is reachable; under
-    # $ErrorActionPreference='Stop' the 2>&1 merge surfaces that as a
-    # terminating NativeCommandError that would abort the whole install on
-    # the very first probe. Swallow it and rely on $LASTEXITCODE so the
-    # Start-Process serve fallback below actually runs (issue #522).
-    try { & $ollamaExe list 2>&1 | Out-Null } catch { }
-    if ($LASTEXITCODE -eq 0) {
-        $ollamaReady = $true
-        break
-    }
-    if ($i -eq 5) {
-        # Daemon clearly isn't auto-running - start it ourselves. Ollama
-        # for Windows uses the tray app `ollama app.exe`; falling back to
-        # `ollama serve` works headless.
-        Start-Process -FilePath $ollamaExe -ArgumentList 'serve' -WindowStyle Hidden -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Seconds 1
-}
-if (-not $ollamaReady) {
-    Write-Warn2 "Ollama daemon didn't become ready in 60s. Continuing - bg-orchestrator will retry later."
+        $tags = Invoke-RestMethod 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2
+        if ($tags.PSObject.Properties['models']) { return $tags }
+    } catch { }
 }
 
-# ---------------------------------------------------------------------------
-# 8. Pull a starter model (qwen3.5:2b - ~1.5 GB)
-# ---------------------------------------------------------------------------
-
-$modelPullOk = $false
-if ($ollamaReady) {
-    Write-Info "Pulling qwen3.5:2b (~1.5 GB) so 'jarvis' works on first run..."
-    & $ollamaExe pull 'qwen3.5:2b'
-    if ($LASTEXITCODE -eq 0) {
-        $modelPullOk = $true
-        Write-Ok "Starter model ready"
-    } else {
-        Write-Warn2 "ollama pull failed; the bg-orchestrator will retry once Ollama is reachable."
-    }
-} else {
-    Write-Warn2 "Skipping model pull - daemon wasn't ready."
+function Wait-OllamaInstaller($process, $log, [int]$timeoutSeconds=300) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        if ($process.WaitForExit(1000)) {
+            if ($process.ExitCode -ne 0) { throw "Ollama setup exited with $($process.ExitCode). Log: $log" }
+            return
+        }
+        if ([int]$clock.Elapsed.TotalSeconds % 15 -eq 0) { Write-Info "Waiting for Ollama setup (PID $($process.Id)). Log: $log" }
+    } while ($clock.Elapsed.TotalSeconds -lt $timeoutSeconds)
+    throw "Ollama setup still running (PID $($process.Id)). Review $log before retrying. The installer was left intact."
 }
+
+function Install-OllamaIfMissing {
+    if (Get-Process -Name OllamaSetup -ErrorAction SilentlyContinue) { throw 'An Ollama installer is already running. Finish it before retrying.' }
+    $stage = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("OpenJarvis-setup-" + [guid]::NewGuid()))
+    $setup = Join-Path $stage.FullName 'OllamaSetup.exe'
+    $log = Join-Path $stage.FullName 'setup.log'
+    Write-Info "Downloading Ollama. Installer log: $log"
+    Invoke-WebRequest -UseBasicParsing 'https://ollama.com/download/OllamaSetup.exe' -OutFile $setup -TimeoutSec 600
+    # The upstream Windows package is Inno Setup (app/ollama.iss).
+    $child = Start-Process $setup -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$log`"" -PassThru -WindowStyle Hidden
+    Wait-OllamaInstaller $child $log
+}
+
+function Initialize-LocalOllama {
+    $exe = Find-OllamaExecutable
+    $tags = Get-LocalOllamaTags
+    if (-not $tags -and -not $exe) {
+        Install-OllamaIfMissing
+        $exe = Find-OllamaExecutable
+        $tags = Get-LocalOllamaTags
+    }
+    if (-not $tags) {
+        if (-not $exe) { throw 'Setup finished but Ollama is unavailable. Check its setup log.' }
+        Start-Process $exe -ArgumentList 'serve' -WindowStyle Hidden
+        for ($i=0; $i -lt 30 -and -not $tags; $i++) {
+            Start-Sleep -Seconds 1
+            $tags = Get-LocalOllamaTags
+        }
+        if (-not $tags) { throw 'Installed Ollama did not answer on 127.0.0.1:11434. Check its server log; no reinstall attempted.' }
+    }
+    if ($exe) {
+        & $exe list | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Ollama CLI list failed. Check OLLAMA_HOST and $exe." }
+    }
+    $model = $tags.models | Where-Object name -like 'qwen*' | Select-Object -First 1 -ExpandProperty name
+    if ($model) { Write-Ok "Reusing installed model $model"; return }
+    Write-Info 'Downloading starter model qwen3.5:2b'
+    $result = Invoke-RestMethod 'http://127.0.0.1:11434/api/pull' -Method Post -ContentType application/json -Body '{"model":"qwen3.5:2b","stream":false}' -TimeoutSec 3600
+    if ($result.status -ne 'success') { throw 'Ollama did not confirm the starter model download.' }
+}
+
+Write-Info "Checking local Ollama installation..."
+Initialize-LocalOllama
+$modelPullOk = $true
 
 # ---------------------------------------------------------------------------
 # 9. jarvis.cmd shim - so bare `jarvis` works in any new PowerShell

@@ -1,6 +1,8 @@
 # Setup the user's separate local OpenJarvis, including an offline voice.
 # The existing Jarvis application and its files are not touched.
 $ErrorActionPreference = 'Stop'
+if (-not $env:OPENJARVIS_VOICE_PORT) { $env:OPENJARVIS_VOICE_PORT = '4711' }
+$voiceUrl = "http://127.0.0.1:$([int]$env:OPENJARVIS_VOICE_PORT)"
 $repo = 'https://github.com/itsHALE101/OpenJarvis.git'
 $root = Join-Path $env:LOCALAPPDATA 'OpenJarvis-Offline'
 $src = Join-Path $root 'src'
@@ -19,6 +21,8 @@ Write-Host 'Initial downloads require internet. No paid voice API is enabled.'
 Write-Host 'Existing Jarvis application files will not be overwritten.'
 Write-Host ''
 
+$oldConfig = $env:OPENJARVIS_CONFIG
+$oldMic = $env:OPENJARVIS_MIC_RMS
 $oldRepo = $env:OPENJARVIS_REPO_URL
 $oldRoot = $env:OPENJARVIS_HOME
 $oldSkip = $env:OPENJARVIS_SKIP_SERVICE
@@ -34,6 +38,8 @@ try {
 
     $env:OPENJARVIS_REPO_URL = $repo
     $env:OPENJARVIS_HOME = $root
+    $env:OPENJARVIS_CONFIG = Join-Path $root 'config.toml'
+    if (-not $env:OPENJARVIS_MIC_RMS) { $env:OPENJARVIS_MIC_RMS = '140' }
     $env:OPENJARVIS_SKIP_SERVICE = '1'
     # OpenJarvis pins Rust 1.89 in rust/rust-toolchain.toml.
     # A working generic cargo.exe is NOT enough if this exact toolchain is missing.
@@ -150,6 +156,7 @@ try {
     if (-not $uv) { $uv = Join-Path $env:USERPROFILE '.local\bin\uv.exe' }
     if (-not (Test-Path $uv)) { throw 'uv missing after installation.' }
 
+    $env:Path = "$(Split-Path -Parent $uv);$env:Path"
     Write-Host '[2/5] Installing the British Piper voice...' -ForegroundColor Cyan
     & (Join-Path $voiceDir '01_Setup_Offline_Voice.bat')
     if ($LASTEXITCODE -ne 0) { throw 'Local Piper voice setup failed.' }
@@ -157,7 +164,9 @@ try {
     Write-Host '[3/5] Installing local microphone and voice playback dependencies...' -ForegroundColor Cyan
     Push-Location $src
     try {
-        & $uv sync --extra desktop --extra speech --extra voice --group desktop-native
+        # The desktop extra already includes local Whisper, sounddevice and soundfile.
+        # Piper runs in its own environment; the Kokoro voice extra is unnecessary.
+        & .\.venv\Scripts\python.exe -c "from faster_whisper import WhisperModel; import sounddevice, soundfile; WhisperModel('base',device='cpu',compute_type='int8')"
         if ($LASTEXITCODE -ne 0) { throw 'Speech dependencies failed to install.' }
     } finally { Pop-Location }
 
@@ -173,15 +182,15 @@ try {
     if (-not (Test-Path $voicePython)) { throw 'Offline voice Python missing.' }
     $ready = $false
     try {
-        $check = Invoke-RestMethod -Uri 'http://127.0.0.1:4701/health' -TimeoutSec 2
+        $check = Invoke-RestMethod -Uri "$voiceUrl/health" -TimeoutSec 2
         $ready = ($check.ready -eq $true)
     } catch { }
     if (-not $ready) {
-        Start-Process -FilePath $voicePython -ArgumentList ('"' + $voiceServer + '"') -WorkingDirectory $voiceDir
+        Start-Process -FilePath $voicePython -ArgumentList ('"' + $voiceServer + '"') -WindowStyle Hidden -WorkingDirectory $voiceDir
         for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep -Milliseconds 500
             try {
-                $check = Invoke-RestMethod -Uri 'http://127.0.0.1:4701/health' -TimeoutSec 2
+                $check = Invoke-RestMethod -Uri "$voiceUrl/health" -TimeoutSec 2
                 if ($check.ready -eq $true) { $ready = $true; break }
             } catch { }
         }
@@ -190,7 +199,7 @@ try {
 
     $wav = Join-Path $env:TEMP 'jarvis_local_voice_test.wav'
     $params = @{
-        Uri = 'http://127.0.0.1:4701/speak'
+        Uri = "$voiceUrl/speak"
         Method = 'POST'
         ContentType = 'application/json'
         Body = '{"text":"Good day sir. Your offline Jarvis is now ready."}'
@@ -209,9 +218,11 @@ try {
     $jarvisExe = Join-Path $src '.venv\Scripts\jarvis.exe'
     if (-not (Test-Path $jarvisExe)) { throw 'Jarvis CLI missing after install.' }
     Push-Location $src
-    try { & $jarvisExe chat --voice }
+    try { & $jarvisExe chat --voice --engine ollama --skip-runtime-panel }
     finally { Pop-Location }
 } finally {
+    $env:OPENJARVIS_CONFIG = $oldConfig
+    $env:OPENJARVIS_MIC_RMS = $oldMic
     $env:OPENJARVIS_REPO_URL = $oldRepo
     $env:OPENJARVIS_HOME = $oldRoot
     $env:OPENJARVIS_SKIP_SERVICE = $oldSkip

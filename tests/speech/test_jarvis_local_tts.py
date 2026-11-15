@@ -57,3 +57,14 @@ def test_jarvis_local_never_falls_back_to_paid_provider():
         attempted = set()
         assert get_tts_backend("jarvis_local", attempted=attempted) is None
         assert attempted == {"jarvis_local", "kokoro"}
+
+def test_long_reply_is_spoken_in_order_without_losing_audio():
+    reply = Mock(content=_wav(), headers={"X-Jarvis-Voice-Backend":"Piper"})
+    text = "A full sentence. " * 75
+    with patch("openjarvis.speech.jarvis_local_tts.httpx.post", return_value=reply) as post:
+        result = JarvisLocalTTSBackend().synthesize(text)
+    chunks = [call.kwargs["json"]["text"] for call in post.call_args_list]
+    assert len(chunks) > 1 and max(map(len, chunks)) <= 600
+    assert " ".join(chunks) == text.strip()
+    with wave.open(io.BytesIO(result.audio)) as wav:
+        assert wav.getnframes() == 2205 * len(chunks)

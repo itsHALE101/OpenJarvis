@@ -8,7 +8,7 @@ rem The official setup then installs a separate local OpenJarvis installation.
 set "BOOTROOT=%LOCALAPPDATA%\OpenJarvis-Offline\bootstrap"
 set "BOOTPS=%BOOTROOT%\jarvis_voice_setup\one_click_windows.ps1"
 set "BOOTINSTALL=%BOOTROOT%\deploy\windows\install.ps1"
-set "REVISION=1c8857c9f23d0f010d2f125bfdca9e473650c273"
+set "REVISION=dfa416f6ba74679d80af2e8e9b6c32ea542a705a"
 
 echo.
 echo ============================================================
@@ -24,6 +24,11 @@ if not exist "%BOOTROOT%\deploy\windows" mkdir "%BOOTROOT%\deploy\windows"
 if not exist "%BOOTROOT%\jarvis_voice_setup" goto failed
 if not exist "%BOOTROOT%\deploy\windows" goto failed
 
+if exist "%~dp0deploy\windows\install.ps1" if exist "%~dp0jarvis_voice_setup\one_click_windows.ps1" (
+  powershell.exe -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0jarvis_voice_setup\one_click_windows.ps1"
+  if errorlevel 1 goto failed
+  exit /b 0
+)
 echo [1/2] Recovering the installation files directly from your GitHub...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; $base='https://raw.githubusercontent.com/itsHALE101/OpenJarvis/%REVISION%'; Invoke-WebRequest -UseBasicParsing -Uri ($base + '/jarvis_voice_setup/one_click_windows.ps1') -OutFile '%BOOTPS%'; Invoke-WebRequest -UseBasicParsing -Uri ($base + '/deploy/windows/install.ps1') -OutFile '%BOOTINSTALL%';"
