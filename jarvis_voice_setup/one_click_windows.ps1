@@ -35,6 +35,58 @@ try {
     $env:OPENJARVIS_REPO_URL = $repo
     $env:OPENJARVIS_HOME = $root
     $env:OPENJARVIS_SKIP_SERVICE = '1'
+    # Maturin can bootstrap a temporary Rust copy via puccinialin, but on
+    # Windows that copy sometimes fails even on "cargo --version" (exit 1).
+    # Prefer a verified user Rustup toolchain instead. OpenJarvis pins 1.89
+    # in rust/rust-toolchain.toml. Do not alter a working Rust installation.
+    Write-Host '[0/5] Checking Rust and Cargo for native OpenJarvis...' -ForegroundColor Cyan
+    $rustBin = Join-Path $env:USERPROFILE '.cargo\bin'
+    if (Test-Path $rustBin) { $env:Path = "$rustBin;$env:Path" }
+
+    function Test-RustCompiler {
+        $cargoExe = (Get-Command cargo.exe -ErrorAction SilentlyContinue).Source
+        $rustcExe = (Get-Command rustc.exe -ErrorAction SilentlyContinue).Source
+        if (-not $cargoExe -or -not $rustcExe) { return $false }
+        try {
+            & $cargoExe --version | Out-Null
+            if ($LASTEXITCODE -ne 0) { return $false }
+            & $rustcExe --version | Out-Null
+            return ($LASTEXITCODE -eq 0)
+        } catch {
+            return $false
+        }
+    }
+
+    if (-not (Test-RustCompiler)) {
+        Write-Host 'Rust is missing or broken; installing the FREE official Rustup toolchain...' -ForegroundColor Yellow
+        $rustupExe = (Get-Command rustup.exe -ErrorAction SilentlyContinue).Source
+        if (-not $rustupExe) {
+            $wingetExe = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+            if (-not $wingetExe) {
+                throw 'Rustup is missing and Windows Package Manager (winget) is not available. Install Rustup from https://rustup.rs then retry.'
+            }
+            Write-Host 'Windows may ask you to approve the official Rustup installer.' -ForegroundColor Yellow
+            & $wingetExe install --exact --id Rustlang.Rustup --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Rustup installation did not finish. Install Rustup from https://rustup.rs and rerun.'
+            }
+            $env:Path = "$rustBin;$env:Path"
+            $rustupExe = (Get-Command rustup.exe -ErrorAction SilentlyContinue).Source
+        }
+        if (-not $rustupExe) {
+            throw 'Rustup installed but its executable is not available. Reopen PowerShell or restart Windows and rerun the launcher.'
+        }
+        & $rustupExe toolchain install '1.89.0' --profile minimal
+        if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain 1.89.0 could not be installed.' }
+        & $rustupExe default '1.89.0'
+        if ($LASTEXITCODE -ne 0) { throw 'Rustup could not select Rust 1.89.0.' }
+        $env:Path = "$rustBin;$env:Path"
+    }
+    if (-not (Test-RustCompiler)) {
+        throw 'Rust/Cargo is still unavailable. Open a new PowerShell, check cargo --version and rustc --version, then retry.'
+    }
+    Write-Host 'Rust and Cargo are ready.' -ForegroundColor Green
+
     Write-Host '[1/5] Installing OpenJarvis and the local AI model...' -ForegroundColor Cyan
     & $upstream -SkipService
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "Installer returned code $LASTEXITCODE" }
