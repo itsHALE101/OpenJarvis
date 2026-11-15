@@ -15,6 +15,7 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+VOICE_PORT = int(os.environ.get("OPENJARVIS_VOICE_PORT", "4701"))
 VOICE_DIR = Path.home() / ".openjarvis" / "voices"
 PIPER_MODEL = VOICE_DIR / "en_GB-alan-medium.onnx"
 REFERENCE = VOICE_DIR / "jarvis_reference.wav"
@@ -127,8 +128,8 @@ def main() -> None:
         raise SystemExit(
             "Piper model missing. Run jarvis_voice_setup\\01_Setup_Offline_Voice.bat"
         )
-    server = ThreadingHTTPServer(("127.0.0.1", 4701), VoiceHandler)
-    print("Offline Jarvis voice ready: http://127.0.0.1:4701/health")
+    server = ThreadingHTTPServer(("127.0.0.1", VOICE_PORT), VoiceHandler)
+    print(f"Offline Jarvis voice ready: http://127.0.0.1:{VOICE_PORT}/health")
     print("Voice cloning is", "enabled" if ENABLE_CLONE else "disabled (Piper only)")
     print("Keep this window open when using Jarvis. Ctrl+C to stop.")
     try:

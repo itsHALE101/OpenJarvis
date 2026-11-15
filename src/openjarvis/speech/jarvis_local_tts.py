@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import os
+import textwrap
 import wave
 from typing import List
 
@@ -10,7 +12,7 @@ import httpx
 from openjarvis.core.registry import TTSRegistry
 from openjarvis.speech.tts import TTSBackend, TTSResult
 
-LOCAL_VOICE_URL = "http://127.0.0.1:4701"
+LOCAL_VOICE_URL = f"http://127.0.0.1:{int(os.environ.get('OPENJARVIS_VOICE_PORT', '4701'))}"
 
 
 @TTSRegistry.register("jarvis_local")
@@ -41,7 +43,19 @@ class JarvisLocalTTSBackend(TTSBackend):
         if not isinstance(text, str) or not text.strip():
             raise ValueError("No speech text provided")
         if len(text) > 600:
-            raise ValueError("Local speech request exceeds 600 characters")
+            chunks = textwrap.wrap(text, width=600, break_long_words=True)
+            output = io.BytesIO()
+            with wave.open(output, "wb") as combined:
+                for index, chunk in enumerate(chunks):
+                    part = self.synthesize(chunk, voice_id=voice_id, speed=speed, output_format=output_format)
+                    with wave.open(io.BytesIO(part.audio), "rb") as segment:
+                        if index == 0:
+                            combined.setparams(segment.getparams())
+                        combined.writeframes(segment.readframes(segment.getnframes()))
+            with wave.open(io.BytesIO(output.getvalue()), "rb") as clip:
+                return TTSResult(audio=output.getvalue(), format="wav", sample_rate=clip.getframerate(),
+                                 duration_seconds=clip.getnframes()/clip.getframerate(),
+                                 voice_id=part.voice_id, metadata=part.metadata)
         try:
             reply = httpx.post(
                 f"{LOCAL_VOICE_URL}/speak",
@@ -50,7 +64,7 @@ class JarvisLocalTTSBackend(TTSBackend):
             )
             reply.raise_for_status()
         except httpx.HTTPError:
-            raise RuntimeError("Local Jarvis voice service unavailable (127.0.0.1:4701)") from None
+            raise RuntimeError(f"Local Jarvis voice service unavailable at {LOCAL_VOICE_URL}") from None
         audio = reply.content
         if not audio.startswith(b"RIFF") or len(audio) < 44:
             raise RuntimeError("Local Jarvis voice service returned invalid WAV audio")

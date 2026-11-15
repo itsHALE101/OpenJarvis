@@ -146,7 +146,16 @@ def record_voice(
 
     console.print("[dim cyan]Listening… (speak now, stops on silence)[/dim cyan]")
     try:
-        audio_bytes = record_until_silence()
+        import os
+
+        threshold = os.environ.get("OPENJARVIS_MIC_RMS")
+        if threshold:
+            rms = int(threshold)
+            if not 1 <= rms <= 32767:
+                raise ValueError("OPENJARVIS_MIC_RMS must be between 1 and 32767")
+            audio_bytes = record_until_silence(silence_threshold=rms, startup_silence_seconds=10)
+        else:
+            audio_bytes = record_until_silence()
     except KeyboardInterrupt:
         return VOICE_EXIT
     except Exception as exc:
